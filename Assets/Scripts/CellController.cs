@@ -1,9 +1,11 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using TMPro;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.UI;
+using SimpleFileBrowser;
 
 public class CellController : MonoBehaviour
 {
@@ -16,10 +18,11 @@ public class CellController : MonoBehaviour
     [SerializeField] TextMeshProUGUI textCurrentStep;
     [SerializeField] TextMeshProUGUI textCellCount;
     [SerializeField] TextMeshProUGUI textStepsPerSecond;
-    [SerializeField] GameObject camera;
+    [SerializeField] new GameObject camera;
     [SerializeField] GameObject currentCell;
     [SerializeField] Material matPlaceCell;
     [SerializeField] Material matDeleteCell;
+    [SerializeField] ConfigurationManager configurationManager;
     int blockSize = 2;
     int stepsPerSecond = 1;
     int currentStep;
@@ -28,7 +31,7 @@ public class CellController : MonoBehaviour
     bool running;
     float timeLastUpdate;
     List<Cell> cells = new List<Cell>();
-    List<Cell> cellConfiguration = new List<Cell>();
+    Configuration configuration = new Configuration();
     List<Cell> cellsToRemove = new List<Cell>();
 
     public float TimeBetweenUpdates { get => timeBetweenUpdates; set => timeBetweenUpdates = value; }
@@ -67,19 +70,50 @@ public class CellController : MonoBehaviour
     {
         textCurrentStep.text = currentStep.ToString();
     }
+    IEnumerator ShowLoadDialogCoroutine()
+    {
+        // Show a load file dialog and wait for a response from user
+        // Load file/folder: both, Allow multiple selection: true
+        // Initial path: default (Documents), Initial filename: empty
+        // Title: "Load File", Submit button text: "Load"
+        yield return FileBrowser.WaitForLoadDialog(FileBrowser.PickMode.Files, false, null, "default.golconfig", "Load Configuration", "Load");
+
+        if (FileBrowser.Success)
+        {
+            configuration = configurationManager.Load(FileBrowser.Result[0]);
+            RemoveAllCells();
+            SetGridToCellConfiguration();
+            UpdateCellCountText();
+        }
+    }
+
+    IEnumerator ShowSaveDialogCoroutine()
+    {
+        // Show a load file dialog and wait for a response from user
+        // Load file/folder: both, Allow multiple selection: true
+        // Initial path: default (Documents), Initial filename: empty
+        // Title: "Load File", Submit button text: "Load"
+        yield return FileBrowser.WaitForSaveDialog(FileBrowser.PickMode.Files, false, null, "default.golconfig", "Save Configuration", "Save");
+
+        if (FileBrowser.Success)
+        {
+            configurationManager.Save(configuration, FileBrowser.Result[0]);
+        }
+    }
+
 
     private void ToggleGridValue(Vector3Int position)
     {
         if (grid[position.x, position.y, position.z] == false)
         {
             CreateCell(position);
-            cellConfiguration.Add(new Cell(position));
+            configuration.Cells.Add(position);
         }
         else
         {
             Cell cell = cells.Find(o => o.X == position.x && o.Y == position.y && o.Z == position.z);
             RemoveCell(cell);
-            cellConfiguration.Remove(cell);
+            configuration.Cells.Remove(position);
         }
     }
 
@@ -284,7 +318,7 @@ public class CellController : MonoBehaviour
     public void OnRemoveAllCellsClick()
     {
         RemoveAllCells();
-        cellConfiguration.Clear();
+        configuration = new Configuration();
     }
 
     public void OnSliderValueChanged()
@@ -292,6 +326,20 @@ public class CellController : MonoBehaviour
         stepsPerSecond = (int)sliderStepsPerSecond.value;
         textStepsPerSecond.text = stepsPerSecond.ToString();
         TimeBetweenUpdates = 1 / (float)stepsPerSecond;
+    }
+
+    public void OnSaveConfiguration()
+    {
+        FileBrowser.SetFilters(true, new FileBrowser.Filter("Configuration Files", ".golconfig"));
+        FileBrowser.SetDefaultFilter(".golconfig");
+        StartCoroutine(ShowSaveDialogCoroutine());
+    }
+
+    public void OnLoadConfiguration()
+    {
+        FileBrowser.SetFilters(true, new FileBrowser.Filter("Configuration Files", ".golconfig"));
+        FileBrowser.SetDefaultFilter(".golconfig");
+        StartCoroutine(ShowLoadDialogCoroutine());
     }
 
     public void OnPlayClick()
@@ -327,9 +375,9 @@ public class CellController : MonoBehaviour
 
     private void SetGridToCellConfiguration()
     {
-        foreach (Cell cell in cellConfiguration)
+        foreach (Vector3Int cell in configuration.Cells)
         {
-            CreateCell(new Vector3Int(cell.X, cell.Y, cell.Z));
+            CreateCell(cell);
         }
     }
 }
