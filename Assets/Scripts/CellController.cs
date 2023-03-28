@@ -6,18 +6,31 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.UI;
 using SimpleFileBrowser;
+using System.Linq;
+using System;
 
 public class CellController : MonoBehaviour
 {
     public const int GRID_SIZE = 500;
+
     public static CellController Instance;
     [SerializeField] GameObject pfCell;
     [SerializeField] TMP_Dropdown dropdownBlockSize;
+    [SerializeField] TMP_Dropdown dropdownLowerLimitBirth;
+    [SerializeField] TMP_Dropdown dropdownLowerLimitDeath;
+    [SerializeField] TMP_Dropdown dropdownUpperLimitBirth;
+    [SerializeField] TMP_Dropdown dropdownUpperLimitDeath;
     [SerializeField] Slider sliderStepsPerSecond;
     [SerializeField] TextMeshProUGUI textButtonPlay;
     [SerializeField] TextMeshProUGUI textCurrentStep;
     [SerializeField] TextMeshProUGUI textCellCount;
+    [SerializeField] TextMeshProUGUI textCreateCount;
+    [SerializeField] TextMeshProUGUI textDeleteCount;
     [SerializeField] TextMeshProUGUI textStepsPerSecond;
+    [SerializeField] TextMeshProUGUI textTries;
+    [SerializeField] TextMeshProUGUI labelTries;
+    [SerializeField] GameObject panelHelp;
+    [SerializeField] GameObject panelLifeConditions;
     [SerializeField] new GameObject camera;
     [SerializeField] GameObject currentCell;
     [SerializeField] Material matPlaceCell;
@@ -26,13 +39,22 @@ public class CellController : MonoBehaviour
     int blockSize = 2;
     int stepsPerSecond = 1;
     int currentStep;
-    int cellCount;
+    long cellCount;
+    long createCount;
+    long deleteCount;
     float timeBetweenUpdates = 1;
     bool running;
+    bool simulationMode;
     float timeLastUpdate;
     List<Cell> cells = new List<Cell>();
     Configuration configuration = new Configuration();
     List<Cell> cellsToRemove = new List<Cell>();
+    long previousCreated, previousDeleted;
+    LifeConditions lifeConditions = new LifeConditions();
+    int configNumber;
+
+    Configuration bestConfiguration = new Configuration();
+    int bestNumberOfSteps;
 
     public float TimeBetweenUpdates { get => timeBetweenUpdates; set => timeBetweenUpdates = value; }
     public bool Running { get => running; set => running = value; }
@@ -50,15 +72,21 @@ public class CellController : MonoBehaviour
 
     public void Start()
     {
-        RemoveAllCells();
+        ResetAllCells();
         OnLookAtCellClick();
+        labelTries.enabled = false;
+        panelHelp.SetActive(false);
+        panelLifeConditions.SetActive(false);
     }
 
     private void OnPlaceCell(InputValue value)
     {
-        ToggleGridValue(gridPosition);
-        UpdateCellCountText();
-        UpdateCurrentCellColor();
+        if (!running)
+        {
+            ToggleGridValue(gridPosition);
+            UpdateCellCountText();
+            UpdateCurrentCellColor();
+        }
     }
 
     private void UpdateCellCountText()
@@ -66,10 +94,20 @@ public class CellController : MonoBehaviour
         textCellCount.text = cellCount.ToString();
     }
 
+    private void UpdateCreateCountText()
+    {
+        textCreateCount.text = createCount.ToString();
+    }
+    private void UpdateDeleteCountText()
+    {
+        textDeleteCount.text = deleteCount.ToString();
+    }
+
     private void UpdateCurrentStepText()
     {
         textCurrentStep.text = currentStep.ToString();
     }
+
     IEnumerator ShowLoadDialogCoroutine()
     {
         // Show a load file dialog and wait for a response from user
@@ -81,7 +119,7 @@ public class CellController : MonoBehaviour
         if (FileBrowser.Success)
         {
             configuration = configurationManager.Load(FileBrowser.Result[0]);
-            RemoveAllCells();
+            ResetAllCells();
             SetGridToCellConfiguration();
             UpdateCellCountText();
         }
@@ -108,12 +146,39 @@ public class CellController : MonoBehaviour
         {
             CreateCell(position);
             configuration.Cells.Add(position);
+            CheckDoubles();
         }
         else
         {
             Cell cell = cells.Find(o => o.X == position.x && o.Y == position.y && o.Z == position.z);
+            if (cell == null)
+            {
+                Debug.LogError("Cell not found!");
+            }
             RemoveCell(cell);
             configuration.Cells.Remove(position);
+        }
+    }
+    private void CheckCellsMarkedAsDoubles()
+    {
+        foreach(Vector3Int cell in configuration.Cells)
+        {
+            if (grid[cell.x, cell.y, cell.z] == false)
+            {
+                Debug.LogError("Cell should be marked in-use!");
+            }
+        }
+    }
+
+    private void CheckDoubles()
+    {
+        var doubles = configuration.Cells.GroupBy(x => x)
+              .Where(g => g.Count() > 1)
+              .Select(y => y.Key)
+              .ToList();
+        if (doubles.Count() > 0)
+        {
+            Debug.LogError("Cell already used!");
         }
     }
 
@@ -165,32 +230,60 @@ public class CellController : MonoBehaviour
         UpdateCurrentCellColor();
     }
 
+    private void UpdateCells()
+    {
+        currentStep++;
+        cellsToRemove.Clear();
+        foreach (Cell cell in cells.ToArray())
+        {
+            // when there are less than 5 or more than 20 neighbour cells, the cell will die
+            if (gridNeighbourCount[cell.X, cell.Y, cell.Z] <= lifeConditions.LowerLimitDeath || gridNeighbourCount[cell.X, cell.Y, cell.Z] >= lifeConditions.UpperLimitDeath)
+            {
+                deleteCount++;
+                cellsToRemove.Add(cell);
+            }
+            CheckNewLife(cell);
+        }
+        foreach (Cell cell in cellsToRemove.ToArray())
+        {
+            RemoveCell(cell);
+        }
+
+        if (cellCount == 0)
+        {
+            Running = false;
+        }
+    }
+
     public void Update()
     {
-        if (Running && Time.time - timeLastUpdate > TimeBetweenUpdates)
+        if (simulationMode)
         {
-            currentStep++;
-            UpdateCurrentStepText();
-            timeLastUpdate = Time.time;
-            cellsToRemove.Clear();
-            foreach (Cell cell in cells.ToArray())
+            return;
+        }
+        if (Running)
+        {
+            while (Time.time - timeLastUpdate > TimeBetweenUpdates)
             {
-                // when there are less than 10 or more than 15 neighbour cells, the cell will die
-                if (gridNeighbourCount[cell.X, cell.Y, cell.Z] < 10 || gridNeighbourCount[cell.X, cell.Y, cell.Z] > 15)
+                UpdateCells();
+                UpdateCurrentStepText();
+                UpdateCellCountText();
+                UpdateCreateCountText();
+                UpdateDeleteCountText();
+                if (previousCreated == createCount && previousDeleted == deleteCount)
                 {
-                    cellsToRemove.Add(cell);
+                    // there is no activity anymore, so stop
+                    running = false;
+                    break;
                 }
-                CheckNewLife(cell);
-            }
-            foreach (Cell cell in cellsToRemove.ToArray())
-            {
-                RemoveCell(cell);
-            }
+                previousCreated = createCount;
+                previousDeleted = deleteCount;
 
-            UpdateCellCountText();
-            if (cellCount == 0)
+                timeLastUpdate += TimeBetweenUpdates;
+            }
+            if (!running)
             {
-                Running = false;
+                textButtonPlay.text = ">> Play";
             }
         }
         currentCell.transform.position = gridPosition;
@@ -204,9 +297,10 @@ public class CellController : MonoBehaviour
             {
                 for (int z = cell.Z - 1; z <= cell.Z + 1; z++)
                 {
-                    // when there are 14 or 15 neighbour cells to a empty place on the grid, a cell will grow there.
-                    if (gridNeighbourCount[x, y, z] > 13 && gridNeighbourCount[x, y, z] < 16)
+                    // when there are 14-15 neighbour cells to a empty place on the grid, a cell will grow there.
+                    if (grid[x, y, z]==false && gridNeighbourCount[x, y, z] >= lifeConditions.LowerLimitBirth && gridNeighbourCount[x, y, z] <= lifeConditions.UpperLimitBirth)
                     {
+                        createCount++;
                         CreateCell(x, y, z);
                     }
                 }
@@ -214,43 +308,17 @@ public class CellController : MonoBehaviour
         }
     }
 
-    private void RemoveCell(Cell cell)
-    {
-        if (grid[cell.X, cell.Y, cell.Z] == false)
-        {
-            return;
-        }
-        cellCount--;
-        Grid[cell.X, cell.Y, cell.Z] = false;
-        gridNeighbourCount[cell.X, cell.Y, cell.Z]++;  // this is necessary because the cell itself is included in following loop
-        for (int x = cell.X - 1; x <= cell.X + 1; x++)
-        {
-            for (int y = cell.Y - 1; y <= cell.Y + 1; y++)
-            {
-                for (int z = cell.Z - 1; z <= cell.Z + 1; z++)
-                {
-                    if (x > 0 && y > 0 && z > 0 && x < GRID_SIZE && y < GRID_SIZE && z < GRID_SIZE)
-                    {
-                        gridNeighbourCount[x, y, z]--;
-                    }
-                }
-            }
-        }
-        Destroy(cell.GameObject);
-        cells.Remove(cell);
-    }
-
     public void OnSpawnCellClick()
     {
-        for (int x = gridPosition.x - blockSize / 2; x <= gridPosition.x + blockSize / 2; x++)
+        for (int x = 0; x < blockSize; x++)
         {
-            for (int y = gridPosition.y - blockSize / 2; y <= gridPosition.y + blockSize / 2; y++)
+            for (int y = 0; y < blockSize; y++)
             {
-                for (int z = gridPosition.z - blockSize / 2; z <= gridPosition.z + blockSize / 2; z++)
+                for (int z = 0; z < blockSize; z++)
                 {
-                    if (Random.value<0.5)
+                    if (UnityEngine.Random.value < 0.5)
                     {
-                        ToggleGridValue(new Vector3Int(x, y, z));
+                        ToggleGridValue(new Vector3Int(gridPosition.x - blockSize / 2 + x, gridPosition.y - blockSize / 2 + y, gridPosition.z - blockSize / 2 + z));
                     }
                 }
             }
@@ -258,7 +326,7 @@ public class CellController : MonoBehaviour
         UpdateCellCountText();
     }
 
-    private void CreateCell (Vector3Int position)
+    private void CreateCell(Vector3Int position)
     {
         CreateCell(position.x, position.y, position.z);
     }
@@ -286,18 +354,52 @@ public class CellController : MonoBehaviour
             }
         }
 
-        GameObject newCell = Instantiate(pfCell, new Vector3(gridX, gridY, gridZ), Quaternion.identity);
-        newCell.name = "cell";
+        GameObject newCell = null;
+        if (!simulationMode)
+        {
+            newCell = Instantiate(pfCell, new Vector3(gridX, gridY, gridZ), Quaternion.identity);
+            newCell.name = "cell";
+        }
         cells.Add(new Cell(newCell, gridX, gridY, gridZ));
     }
 
-    private void RemoveAllCells()
+    private void RemoveCell(Cell cell)
+    {
+        if (grid[cell.X, cell.Y, cell.Z] == false)
+        {
+            return;
+        }
+        cellCount--;
+        Grid[cell.X, cell.Y, cell.Z] = false;
+        gridNeighbourCount[cell.X, cell.Y, cell.Z]++;  // this is necessary because the cell itself is included in following loop
+        for (int x = cell.X - 1; x <= cell.X + 1; x++)
+        {
+            for (int y = cell.Y - 1; y <= cell.Y + 1; y++)
+            {
+                for (int z = cell.Z - 1; z <= cell.Z + 1; z++)
+                {
+                    if (x > 0 && y > 0 && z > 0 && x < GRID_SIZE && y < GRID_SIZE && z < GRID_SIZE)
+                    {
+                        gridNeighbourCount[x, y, z]--;
+                    }
+                }
+            }
+        }
+        if(!simulationMode)
+        {
+            Destroy(cell.GameObject);
+        }
+        cells.Remove(cell);
+    }
+
+    private void ResetAllCells()
     {
         GameObject[] existingCells = GameObject.FindGameObjectsWithTag("Cell");
         foreach (GameObject cell in existingCells)
         {
             Destroy(cell);
         }
+
         cells.Clear();
         for (int x = 0; x < GRID_SIZE; x++)
         {
@@ -305,19 +407,30 @@ public class CellController : MonoBehaviour
             {
                 for (int z = 0; z < GRID_SIZE; z++)
                 {
+                    grid[x, y, z] = false;
                     gridNeighbourCount[x, y, z] = 0;
                 }
             }
         }
         cellCount = 0;
+        createCount = 0;
+        deleteCount = 0;
         currentStep = 0;
-        UpdateCurrentStepText();
-        UpdateCellCountText();
+        previousCreated = -1;
+        previousDeleted = -1;
+
+        if (!simulationMode)
+        {
+            UpdateCurrentStepText();
+            UpdateCellCountText();
+            UpdateCreateCountText();
+            UpdateDeleteCountText();
+        }
     }
 
     public void OnRemoveAllCellsClick()
     {
-        RemoveAllCells();
+        ResetAllCells();
         configuration = new Configuration();
     }
 
@@ -353,6 +466,7 @@ public class CellController : MonoBehaviour
         {
             textButtonPlay.text = ">> Play";
         }
+        timeLastUpdate = Time.time;
     }
 
     public void OnLookAtCellClick()
@@ -367,10 +481,35 @@ public class CellController : MonoBehaviour
         blockSize = dropdownBlockSize.value + 2;
     }
 
+    public void OnDropdownLifeConditionsChanged()
+    {
+        lifeConditions = new LifeConditions(Convert.ToInt32(dropdownLowerLimitDeath.options[dropdownLowerLimitDeath.value].text),
+                                            Convert.ToInt32(dropdownLowerLimitBirth.options[dropdownLowerLimitBirth.value].text),
+                                            Convert.ToInt32(dropdownUpperLimitBirth.options[dropdownUpperLimitBirth.value].text),
+                                            Convert.ToInt32(dropdownUpperLimitDeath.options[dropdownUpperLimitDeath.value].text));
+    }
+
     public void OnRewindClick()
     {
-        RemoveAllCells();
+        ResetAllCells();
         SetGridToCellConfiguration();
+    }
+
+    public void OnButtonHelpClick()
+    {
+        panelHelp.SetActive(!panelHelp.activeInHierarchy);
+    }
+
+    public void OnButtonLifeConditionsClick()
+    {
+        panelLifeConditions.SetActive(!panelLifeConditions.activeInHierarchy);
+        if (panelLifeConditions.activeInHierarchy)
+        {
+            dropdownLowerLimitDeath.value = dropdownLowerLimitDeath.options.FindIndex(option => option.text.Equals(lifeConditions.LowerLimitDeath.ToString()));
+            dropdownLowerLimitBirth.value = dropdownLowerLimitBirth.options.FindIndex(option => option.text.Equals(lifeConditions.LowerLimitBirth.ToString()));
+            dropdownUpperLimitBirth.value = dropdownUpperLimitBirth.options.FindIndex(option => option.text.Equals(lifeConditions.UpperLimitBirth.ToString()));
+            dropdownUpperLimitDeath.value = dropdownUpperLimitDeath.options.FindIndex(option => option.text.Equals(lifeConditions.UpperLimitDeath.ToString()));
+        }
     }
 
     private void SetGridToCellConfiguration()
@@ -378,6 +517,111 @@ public class CellController : MonoBehaviour
         foreach (Vector3Int cell in configuration.Cells)
         {
             CreateCell(cell);
+        }
+        UpdateCellCountText();
+    }
+
+    public void OnRunTestClick()
+    {
+        StartCoroutine(FindBestConfiguration());
+    }
+
+    IEnumerator FindBestConfiguration()
+    {
+        int maxTries = 10000;
+        bestNumberOfSteps = 0;
+        simulationMode = true;
+        labelTries.enabled = true;
+
+        for (int i = 100; i > 0; i--)
+        {
+            ResetAllCells();
+            int sizeTestObject = (int)(6 + UnityEngine.Random.value * 12);
+            configuration = new Configuration(); 
+            bool makeClone = UnityEngine.Random.value < 0.5;
+
+            // create random config
+            for (int gridX = 0; gridX < sizeTestObject; gridX++)
+            {
+                float density = (float)(0.2 + UnityEngine.Random.value * 0.4);
+                for (int gridY = 0; gridY < sizeTestObject; gridY++)
+                {
+                    for (int gridZ = 0; gridZ < sizeTestObject; gridZ++)
+                    {
+                        if (UnityEngine.Random.value < density)
+                        {
+//                            CheckCellsMarkedAsDoubles();
+                            ToggleGridValue(new Vector3Int(gridX + GRID_SIZE / 2, gridY + GRID_SIZE / 2, gridZ + GRID_SIZE / 2));
+                            if (makeClone)
+                            {
+                                // copy the structure with one cell in between
+                                ToggleGridValue(new Vector3Int(gridX + sizeTestObject + 1 + GRID_SIZE / 2, gridY + GRID_SIZE / 2, gridZ + GRID_SIZE / 2));
+                            }
+                        }
+                    }
+                }
+            }
+
+            ResetAllCells();
+            SetGridToCellConfiguration();
+
+            // run it
+            running = true;
+            int tries = 0;
+            while (Running)
+            {
+                UpdateCells();
+                tries++;
+                if (tries >= maxTries)
+                {
+                    break;
+                }
+                if (previousCreated == createCount && previousDeleted == deleteCount)
+                {
+                    break;
+                }
+                if (createCount - previousCreated > 2000)
+                {
+                    break;
+                }
+
+                previousCreated = createCount;
+                previousDeleted = deleteCount;
+            }
+
+            // check amount and save if best
+            if (currentStep > bestNumberOfSteps)
+            {
+                if (currentStep != maxTries)
+                {
+                    bestNumberOfSteps = currentStep;
+
+                    // WriteAnalysis(lifeConditions.LowerLimitDeath + "_" + lifeConditions.LowerLimitBirth + "_" + lifeConditions.UpperLimitBirth + "_" + lifeConditions.UpperLimitDeath + "-" + sizeTestObject + "-" + createCount + deleteCount + "-" + cells.Count + "-" + currentStep, 0);
+                    configurationManager.Save(configuration, "F:\\tmp\\config_" + lifeConditions.LowerLimitDeath + "_" + lifeConditions.LowerLimitBirth + "_" + lifeConditions.UpperLimitBirth + "_" + lifeConditions.UpperLimitDeath + "-" + sizeTestObject + "-" + createCount + deleteCount + "-" + cells.Count + "-" + currentStep + ".golconfig");
+                }
+            }
+            textTries.text = i.ToString();
+
+            yield return null;
+        }
+
+        textTries.text = "";
+        running = false;
+        ResetAllCells();
+        configuration = new Configuration();
+        simulationMode = false;
+        labelTries.enabled = true;
+    }
+
+    private void WriteAnalysis(string value, int analysisNumber)
+    {
+        // write the serialized data to the file
+        using (FileStream stream = new FileStream("F:\\tmp\\analysis_" + analysisNumber + ".gol", FileMode.Append))
+        {
+            using (StreamWriter writer = new StreamWriter(stream))
+            {
+                writer.WriteLine(value);
+            }
         }
     }
 }
