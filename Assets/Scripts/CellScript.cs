@@ -4,58 +4,49 @@ using UnityEngine;
 
 public class CellScript : MonoBehaviour
 {
-    int gridX;
-    int gridY;
-    int gridZ;
-    float timeLastUpdate;
+    const float FADE_TIME = 0.5f;
+    float birthPhase = FADE_TIME;
+    float deathPhase;
+    new Light light;
+    [SerializeField] Material matCell;
+    [SerializeField] Material matDeleteCell;
+    [SerializeField] Material matCreateCell;
 
-    public void Initialize(int x, int y, int z)
+    public void Awake()
     {
-        if (x < 0 || y < 0 || z < 0 || x >= CellController.GRID_SIZE || y >= CellController.GRID_SIZE || z >= CellController.GRID_SIZE)
-        {
-            Destroy(gameObject);
-        }
-        gridX = x;
-        gridY = y;
-        gridZ = z;
-        timeLastUpdate = Time.time;
-        transform.position = new Vector3(x, y, z);
+        light = GetComponent<Light>();
+        GetComponent<Renderer>().material = matCreateCell;
     }
 
     // Update is called once per frame
     void Update()
     {
-        if (CellController.Instance.Running && Time.time - timeLastUpdate > CellController.Instance.TimeBetweenUpdates)
+        if (birthPhase > 0)
         {
-            timeLastUpdate = Time.time;
-            UpdateCell();
-        }
-    }
-
-    private void UpdateCell()
-    {
-        int neighbourCount = -1;    // the cell itself will also be count, so deduct it.
-        for (int x = -1; x < 2; x++)
-        {
-            for (int y = -1; y < 2; y++)
+            birthPhase -= Time.deltaTime;
+            //            light.intensity = (FADE_TIME - birthPhase) * 2;
+            light.intensity = birthPhase * 2;
+            if (birthPhase<=0)
             {
-                for (int z = -1; z < 2; z++)
-                {
-                    if (CellController.Instance.Grid[gridX + x, gridY + y, gridZ + z] == true)
-                    {
-                        neighbourCount++;
-                    }
-                }
+                light.intensity = 0;
+                GetComponent<Renderer>().material = matCell;
             }
         }
-
-        // when there are less than 10 or more than 15 neighbour cells, the cell will die
-        // when there are 14 or 15 neighbour cells to a dead cell, it will come to life.
-        // 
-        if (neighbourCount < 10 || neighbourCount > 15)
+        if (deathPhase > 0)
         {
-            CellController.Instance.Grid[gridX, gridY, gridZ] = false;
-            Destroy(gameObject);
+            deathPhase -= Time.deltaTime;
+            light.intensity = deathPhase * 2;
+            if (deathPhase <= 0)
+            {
+                Destroy(gameObject);
+            }
         }
     }
+
+    public void Terminate()
+    {
+        deathPhase = FADE_TIME;
+        GetComponent<Renderer>().material = matDeleteCell;
+    }
+
 }

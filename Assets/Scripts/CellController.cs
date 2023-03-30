@@ -12,6 +12,7 @@ using System;
 public class CellController : MonoBehaviour
 {
     public const int GRID_SIZE = 500;
+    public const int MAX_RANDOM_BLOCK_SIZE = 10;
 
     public static CellController Instance;
     [SerializeField] GameObject pfCell;
@@ -27,6 +28,7 @@ public class CellController : MonoBehaviour
     [SerializeField] TextMeshProUGUI textCreateCount;
     [SerializeField] TextMeshProUGUI textDeleteCount;
     [SerializeField] TextMeshProUGUI textStepsPerSecond;
+    [SerializeField] TextMeshProUGUI textSpawnRandomCells;
     [SerializeField] TextMeshProUGUI textTries;
     [SerializeField] TextMeshProUGUI labelTries;
     [SerializeField] GameObject panelHelp;
@@ -34,7 +36,7 @@ public class CellController : MonoBehaviour
     [SerializeField] new GameObject camera;
     [SerializeField] GameObject currentCell;
     [SerializeField] Material matPlaceCell;
-    [SerializeField] Material matDeleteCell;
+    [SerializeField] Material matRemoveCell;
     [SerializeField] ConfigurationManager configurationManager;
     int blockSize = 2;
     int stepsPerSecond = 1;
@@ -51,10 +53,15 @@ public class CellController : MonoBehaviour
     List<Cell> cellsToRemove = new List<Cell>();
     long previousCreated, previousDeleted;
     LifeConditions lifeConditions = new LifeConditions();
-    int configNumber;
-
-    Configuration bestConfiguration = new Configuration();
+    bool spawnRandomCells;
     int bestNumberOfSteps;
+    float timeLastRandomSpawn;
+
+    bool motionDetected;
+    Vector3Int minValues;
+    Vector3Int maxValues;
+    Vector3Int timesMinChanged;
+    Vector3Int timesMaxChanged;
 
     public float TimeBetweenUpdates { get => timeBetweenUpdates; set => timeBetweenUpdates = value; }
     public bool Running { get => running; set => running = value; }
@@ -146,15 +153,11 @@ public class CellController : MonoBehaviour
         {
             CreateCell(position);
             configuration.Cells.Add(position);
-            CheckDoubles();
+//            CheckDoubles();
         }
         else
         {
             Cell cell = cells.Find(o => o.X == position.x && o.Y == position.y && o.Z == position.z);
-            if (cell == null)
-            {
-                Debug.LogError("Cell not found!");
-            }
             RemoveCell(cell);
             configuration.Cells.Remove(position);
         }
@@ -190,7 +193,7 @@ public class CellController : MonoBehaviour
         }
         else
         {
-            currentCell.GetComponent<Renderer>().material = matDeleteCell;
+            currentCell.GetComponent<Renderer>().material = matRemoveCell;
         }
     }
 
@@ -230,6 +233,24 @@ public class CellController : MonoBehaviour
         UpdateCurrentCellColor();
     }
 
+    public void OnPlayOneStepClick()
+    {
+        PlayOneStep();
+    }
+
+    public void OnButtonSpawnRandomCellsClick()
+    {
+        spawnRandomCells = !spawnRandomCells;
+        if(spawnRandomCells)
+        {
+            textSpawnRandomCells.text = "on";
+        }
+        else
+        {
+            textSpawnRandomCells.text = "off";
+        }
+    }
+
     private void UpdateCells()
     {
         currentStep++;
@@ -255,8 +276,25 @@ public class CellController : MonoBehaviour
         }
     }
 
+    private void SpawnRandomCells()
+    {
+        CreateRandomBlock(UnityEngine.Random.Range(2, MAX_RANDOM_BLOCK_SIZE), 
+            new Vector3Int(UnityEngine.Random.Range(gridPosition.x - 50, gridPosition.x + 50), 
+            UnityEngine.Random.Range(gridPosition.y - 50, gridPosition.y + 50), 
+            UnityEngine.Random.Range(gridPosition.z - 50, gridPosition.z + 50)));
+    }
+
     public void Update()
     {
+        if (spawnRandomCells)
+        {
+            if (Time.time-timeLastRandomSpawn>1.0f)
+            {
+                timeLastRandomSpawn = Time.time;
+                SpawnRandomCells();
+            }
+        }
+
         if (simulationMode)
         {
             return;
@@ -265,28 +303,39 @@ public class CellController : MonoBehaviour
         {
             while (Time.time - timeLastUpdate > TimeBetweenUpdates)
             {
-                UpdateCells();
-                UpdateCurrentStepText();
-                UpdateCellCountText();
-                UpdateCreateCountText();
-                UpdateDeleteCountText();
-                if (previousCreated == createCount && previousDeleted == deleteCount)
+                if (!PlayOneStep())
                 {
-                    // there is no activity anymore, so stop
-                    running = false;
                     break;
                 }
-                previousCreated = createCount;
-                previousDeleted = deleteCount;
-
-                timeLastUpdate += TimeBetweenUpdates;
             }
             if (!running)
             {
+                currentCell.SetActive(true);
                 textButtonPlay.text = ">> Play";
             }
         }
         currentCell.transform.position = gridPosition;
+    }
+
+    private bool PlayOneStep()
+    {
+        UpdateCells();
+        UpdateCurrentStepText();
+        UpdateCellCountText();
+        UpdateCreateCountText();
+        UpdateDeleteCountText();
+        if (previousCreated == createCount && previousDeleted == deleteCount && !spawnRandomCells)
+        {
+            // there is no activity anymore, so stop
+            running = false;
+            return false;
+        }
+        previousCreated = createCount;
+        previousDeleted = deleteCount;
+
+        timeLastUpdate += TimeBetweenUpdates;
+
+        return true;
     }
 
     private void CheckNewLife(Cell cell)
@@ -310,6 +359,12 @@ public class CellController : MonoBehaviour
 
     public void OnSpawnCellClick()
     {
+        CreateRandomBlock(blockSize, gridPosition);
+        UpdateCellCountText();
+    }
+
+    private void CreateRandomBlock(int blockSize, Vector3Int position)
+    {
         for (int x = 0; x < blockSize; x++)
         {
             for (int y = 0; y < blockSize; y++)
@@ -318,12 +373,11 @@ public class CellController : MonoBehaviour
                 {
                     if (UnityEngine.Random.value < 0.5)
                     {
-                        ToggleGridValue(new Vector3Int(gridPosition.x - blockSize / 2 + x, gridPosition.y - blockSize / 2 + y, gridPosition.z - blockSize / 2 + z));
+                        ToggleGridValue(new Vector3Int(position.x + x, position.y + y, position.z + z));
                     }
                 }
             }
         }
-        UpdateCellCountText();
     }
 
     private void CreateCell(Vector3Int position)
@@ -360,7 +414,68 @@ public class CellController : MonoBehaviour
             newCell = Instantiate(pfCell, new Vector3(gridX, gridY, gridZ), Quaternion.identity);
             newCell.name = "cell";
         }
+
+        SetMinMaxValues(gridX, gridY, gridZ);
+
         cells.Add(new Cell(newCell, gridX, gridY, gridZ));
+    }
+
+    private void SetMinMaxValues(int gridX, int gridY, int gridZ)
+    {
+        if (gridX < minValues.x)
+        {
+            minValues.x = gridX;
+            timesMinChanged.x++;
+            if (timesMinChanged.x > 2)
+            {
+                motionDetected = true;
+            }
+        }
+        if (gridX > maxValues.x)
+        {
+            maxValues.x = gridX;
+            timesMaxChanged.x++;
+            if (timesMaxChanged.x > 2)
+            {
+                motionDetected = true;
+            }
+        }
+        if (gridY < minValues.y)
+        {
+            minValues.y = gridY;
+            timesMinChanged.y++;
+            if (timesMinChanged.y > 2)
+            {
+                motionDetected = true;
+            }
+        }
+        if (gridY > maxValues.y)
+        {
+            maxValues.y = gridY;
+            timesMaxChanged.y++;
+            if (timesMaxChanged.y > 2)
+            {
+                motionDetected = true;
+            }
+        }
+        if (gridZ < minValues.z)
+        {
+            minValues.z = gridZ;
+            timesMinChanged.z++;
+            if (timesMinChanged.z > 2)
+            {
+                motionDetected = true;
+            }
+        }
+        if (gridZ > maxValues.z)
+        {
+            maxValues.z = gridZ;
+            timesMaxChanged.z++;
+            if (timesMaxChanged.z > 2)
+            {
+                motionDetected = true;
+            }
+        }
     }
 
     private void RemoveCell(Cell cell)
@@ -385,9 +500,10 @@ public class CellController : MonoBehaviour
                 }
             }
         }
-        if(!simulationMode)
+        if (!simulationMode)
         {
-            Destroy(cell.GameObject);
+            cell.GameObject.GetComponent<CellScript>().Terminate();
+//            Destroy(cell.GameObject);
         }
         cells.Remove(cell);
     }
@@ -426,6 +542,12 @@ public class CellController : MonoBehaviour
             UpdateCreateCountText();
             UpdateDeleteCountText();
         }
+
+        minValues = new Vector3Int(GRID_SIZE, GRID_SIZE, GRID_SIZE);
+        maxValues = new Vector3Int(-1, -1, -1);
+        timesMinChanged = new Vector3Int(0, 0, 0);
+        timesMaxChanged = new Vector3Int(0, 0, 0);
+        motionDetected = false;
     }
 
     public void OnRemoveAllCellsClick()
@@ -461,10 +583,12 @@ public class CellController : MonoBehaviour
         if (running)
         {
             textButtonPlay.text = "|| Stop";
+            currentCell.SetActive(false);
         }
         else
         {
             textButtonPlay.text = ">> Play";
+            currentCell.SetActive(true);
         }
         timeLastUpdate = Time.time;
     }
@@ -481,12 +605,24 @@ public class CellController : MonoBehaviour
         blockSize = dropdownBlockSize.value + 2;
     }
 
-    public void OnDropdownLifeConditionsChanged()
+    public void OnDropdownUpperDeathChanged()
     {
-        lifeConditions = new LifeConditions(Convert.ToInt32(dropdownLowerLimitDeath.options[dropdownLowerLimitDeath.value].text),
-                                            Convert.ToInt32(dropdownLowerLimitBirth.options[dropdownLowerLimitBirth.value].text),
-                                            Convert.ToInt32(dropdownUpperLimitBirth.options[dropdownUpperLimitBirth.value].text),
-                                            Convert.ToInt32(dropdownUpperLimitDeath.options[dropdownUpperLimitDeath.value].text));
+        lifeConditions.UpperLimitDeath = Convert.ToInt32(dropdownUpperLimitDeath.options[dropdownUpperLimitDeath.value].text);
+    }
+
+    public void OnDropdownLowerDeathChanged()
+    {
+        lifeConditions.LowerLimitDeath = Convert.ToInt32(dropdownLowerLimitDeath.options[dropdownLowerLimitDeath.value].text);
+    }
+
+    public void OnDropdownUpperLifeChanged()
+    {
+        lifeConditions.UpperLimitBirth = Convert.ToInt32(dropdownUpperLimitBirth.options[dropdownUpperLimitBirth.value].text);
+    }
+
+    public void OnDropdownLowerLifeChanged()
+    {
+        lifeConditions.LowerLimitBirth = Convert.ToInt32(dropdownLowerLimitBirth.options[dropdownLowerLimitBirth.value].text);
     }
 
     public void OnRewindClick()
@@ -587,6 +723,8 @@ public class CellController : MonoBehaviour
 
                 previousCreated = createCount;
                 previousDeleted = deleteCount;
+
+                yield return null;
             }
 
             // check amount and save if best
@@ -595,10 +733,9 @@ public class CellController : MonoBehaviour
                 if (currentStep != maxTries)
                 {
                     bestNumberOfSteps = currentStep;
-
+                }
                     // WriteAnalysis(lifeConditions.LowerLimitDeath + "_" + lifeConditions.LowerLimitBirth + "_" + lifeConditions.UpperLimitBirth + "_" + lifeConditions.UpperLimitDeath + "-" + sizeTestObject + "-" + createCount + deleteCount + "-" + cells.Count + "-" + currentStep, 0);
                     configurationManager.Save(configuration, "F:\\tmp\\config_" + lifeConditions.LowerLimitDeath + "_" + lifeConditions.LowerLimitBirth + "_" + lifeConditions.UpperLimitBirth + "_" + lifeConditions.UpperLimitDeath + "-" + sizeTestObject + "-" + createCount + deleteCount + "-" + cells.Count + "-" + currentStep + ".golconfig");
-                }
             }
             textTries.text = i.ToString();
 
